@@ -2,9 +2,12 @@ import contextlib
 import importlib.util
 import json
 import os
+import platform
 import posixpath
 import re
 import shutil
+import signal
+import subprocess
 import sys
 import textwrap
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -28,6 +31,27 @@ from dagster_dg.version import __version__ as dagster_version
 Hash: TypeAlias = Any
 
 CLI_CONFIG_KEY = "config"
+
+
+def is_windows() -> bool:
+    return platform.system() == "Windows"
+
+
+def is_macos() -> bool:
+    return platform.system() == "Darwin"
+
+
+def get_venv_executable(venv_dir: Path) -> Path:
+    if is_windows():
+        return venv_dir / "Scripts" / "python.exe"
+    else:
+        return venv_dir / "bin" / "python"
+
+
+def install_to_venv(venv_dir: Path, install_args: list[str]) -> None:
+    executable = get_venv_executable(venv_dir)
+    command = ["uv", "pip", "install", "--python", str(executable), *install_args]
+    subprocess.run(command, check=True)
 
 
 # Temporarily places a path at the front of sys.path, ensuring that any modules in that path are
@@ -82,6 +106,12 @@ def is_valid_json(value: str) -> bool:
 
 def is_executable_available(command: str) -> bool:
     return bool(shutil.which(command))
+
+
+# Short for "normalize path"-- use this to get the platform-correct string representation of an
+# existing string path.
+def npath(path: str):
+    return str(Path(path))
 
 
 # uv commands should be executed in an environment with no pre-existing VIRTUAL_ENV set. If this
@@ -286,6 +316,11 @@ def exit_with_error(error_message: str) -> Never:
     sys.exit(1)
 
 
+# ########################
+# ##### ERROR MESSAGES
+# ########################
+
+
 def _format_error_message(message: str) -> str:
     # width=10000 unwraps any hardwrapping
     return textwrap.dedent(textwrap.fill(message, width=10000))
@@ -326,6 +361,38 @@ you are using `dg` in a non-managed environment (either outside of a code locati
 `--no-use-dg-managed-environment` flag), you need to independently ensure `dagster-components` is
 installed.
 """
+
+# ########################
+# ##### SUBPROCESSES
+# ########################
+
+# Windows subprocess termination utilities. See here for why we send CTRL_BREAK_EVENT on Windows:
+# https://stefan.sofa-rockers.org/2013/08/15/handling-sub-process-hierarchies-python-linux-os-x/
+
+
+def interrupt_subprocess(pid: int, interrupt_signal: Any = None) -> None:
+    """Send CTRL_BREAK_EVENT on Windows, SIGINT on other platforms."""
+    if is_windows():
+        # Pyright tries to be too smart and thinks that signal.CTRL_BREAK_EVENT is not valid because
+        # it doesn't realize OS is windows.
+        os.kill(pid, interrupt_signal or signal.CTRL_BREAK_EVENT)  # type: ignore
+    else:
+        os.kill(pid, interrupt_signal or signal.SIGINT)
+
+
+def open_subprocess(command: Sequence[str], **kwargs: Any) -> subprocess.Popen:
+    """Sets the correct flags to support graceful termination."""
+    creationflags = 0
+    if is_windows():
+        # Pyright tries to be too smart and thinks that signal.CTRL_BREAK_EVENT is not valid because
+        # it doesn't realize OS is windows.
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore
+    return subprocess.Popen(
+        command,
+        creationflags=creationflags,
+        **kwargs,
+    )
+
 
 # ########################
 # ##### CUSTOM CLICK SUBCLASSES

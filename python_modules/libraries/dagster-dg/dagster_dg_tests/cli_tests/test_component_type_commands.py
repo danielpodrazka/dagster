@@ -11,9 +11,11 @@ ensure_dagster_dg_tests_import()
 from dagster_dg_tests.utils import (
     ProxyRunner,
     assert_runner_result,
+    fixed_panel_width,
     isolated_components_venv,
     isolated_example_component_library_foo_bar,
     isolated_example_deployment_foo,
+    match_terminal_box_output,
     modify_pyproject_toml,
 )
 
@@ -356,9 +358,10 @@ _EXPECTED_COMPONENT_TYPES = textwrap.dedent("""
 
 def test_list_component_types_success():
     with ProxyRunner.test() as runner, isolated_components_venv(runner):
-        result = runner.invoke("component-type", "list")
-        assert_runner_result(result)
-        assert result.output.strip() == _EXPECTED_COMPONENT_TYPES
+        with fixed_panel_width(width=120):
+            result = runner.invoke("component-type", "list")
+            assert_runner_result(result)
+            match_terminal_box_output(result.output.strip(), _EXPECTED_COMPONENT_TYPES)
 
 
 def test_component_type_list_with_no_dagster_components_fails() -> None:

@@ -1,9 +1,6 @@
-import os
-import signal
 import subprocess
-import sys
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -17,7 +14,13 @@ from dagster_dg.cli.global_options import dg_global_options
 from dagster_dg.config import normalize_cli_config
 from dagster_dg.context import DgContext
 from dagster_dg.error import DgError
-from dagster_dg.utils import DgClickCommand, exit_with_error, pushd
+from dagster_dg.utils import (
+    DgClickCommand,
+    exit_with_error,
+    interrupt_subprocess,
+    open_subprocess,
+    pushd,
+)
 
 T = TypeVar("T")
 
@@ -132,7 +135,7 @@ def dev_command(
     with pushd(dg_context.root_path), temp_workspace_file_cm as workspace_file:
         if workspace_file:  # only non-None deployment context
             cmd.extend(["--workspace", workspace_file])
-        uv_run_dagster_dev_process = _open_subprocess(cmd)
+        uv_run_dagster_dev_process = open_subprocess(cmd)
         try:
             while True:
                 time.sleep(_CHECK_SUBPROCESS_INTERVAL)
@@ -151,7 +154,7 @@ def dev_command(
             # directly to the `dagster dev` process (the only child of the `uv run` process). This
             # will cause `dagster dev` to terminate which in turn will cause `uv run` to terminate.
             dagster_dev_pid = _get_child_process_pid(uv_run_dagster_dev_process)
-            _interrupt_subprocess(dagster_dev_pid)
+            interrupt_subprocess(dagster_dev_pid)
 
             try:
                 uv_run_dagster_dev_process.wait(timeout=10)
@@ -162,7 +165,11 @@ def dev_command(
 
 @contextmanager
 def _temp_workspace_file(dg_context: DgContext) -> Iterator[str]:
-    with NamedTemporaryFile(mode="w+", delete=True) as temp_workspace_file:
+    # Note that we can't rely on delete=True here because the NamedTemporaryFile context manager
+    # will create a file lock on Windows that will prevent the child `dagster dev` process we spawn
+    # from being able to read the file. So we use delete=False, exit the context manager before
+    # yielding,  and manually delete the file after the context manager exits.
+    with NamedTemporaryFile(mode="w+", delete=False) as temp_workspace_file:
         entries = []
         for location in dg_context.get_code_location_names():
             code_location_root = dg_context.get_code_location_path(location)
@@ -177,39 +184,19 @@ def _temp_workspace_file(dg_context: DgContext) -> Iterator[str]:
             entries.append({"python_file": entry})
         yaml.dump({"load_from": entries}, temp_workspace_file)
         temp_workspace_file.flush()
+    try:
         yield temp_workspace_file.name
+    finally:
+        Path(temp_workspace_file.name).unlink()
 
 
 def _format_forwarded_option(option: str, value: object) -> list[str]:
     return [] if value is None else [option, str(value)]
 
 
-def _get_child_process_pid(proc: "subprocess.Popen") -> int:
-    children = psutil.Process(proc.pid).children(recursive=False)
+def _get_child_process_pid(proc: subprocess.Popen) -> int:
+    # Windows will sometimes return the parent process as its own child. Filter this out.
+    children = [p for p in psutil.Process(proc.pid).children(recursive=False) if p.pid != proc.pid]
     if len(children) != 1:
         raise ValueError(f"Expected exactly one child process, but found {len(children)}")
     return children[0].pid
-
-
-# Windows subprocess termination utilities. See here for why we send CTRL_BREAK_EVENT on Windows:
-# https://stefan.sofa-rockers.org/2013/08/15/handling-sub-process-hierarchies-python-linux-os-x/
-
-
-def _interrupt_subprocess(pid: int) -> None:
-    """Send CTRL_BREAK_EVENT on Windows, SIGINT on other platforms."""
-    if sys.platform == "win32":
-        os.kill(pid, signal.CTRL_BREAK_EVENT)
-    else:
-        os.kill(pid, signal.SIGINT)
-
-
-def _open_subprocess(command: Sequence[str]) -> "subprocess.Popen":
-    """Sets the correct flags to support graceful termination."""
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-
-    return subprocess.Popen(
-        command,
-        creationflags=creationflags,
-    )

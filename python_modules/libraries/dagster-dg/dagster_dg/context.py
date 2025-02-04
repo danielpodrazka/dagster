@@ -21,6 +21,7 @@ from dagster_dg.utils import (
     get_path_for_module,
     get_path_for_package,
     get_uv_command_env,
+    get_venv_executable,
     is_executable_available,
     is_package_installed,
     pushd,
@@ -128,7 +129,7 @@ class DgContext:
         return self._cache is not None
 
     def get_cache_key(self, data_type: CachableDataType) -> tuple[str, str, str]:
-        path_parts = [str(part) for part in self.root_path.parts if part != "/"]
+        path_parts = [str(part) for part in self.root_path.parts if part != self.root_path.anchor]
         paths_to_hash = [
             self.root_path / "uv.lock",
             *([self.components_lib_path] if self.is_component_library else []),
@@ -212,7 +213,7 @@ class DgContext:
             raise DgError(
                 "`code_location_python_executable` is only available in a code location context"
             )
-        return self.root_path / ".venv" / "bin" / "python"
+        return self.root_path / get_venv_executable(Path(".venv"))
 
     @cached_property
     def components_package_name(self) -> str:
