@@ -759,38 +759,6 @@ class WorkspaceProcessContext(IWorkspaceProcessContext):
             for subscriber in self._state_subscribers.values():
                 subscriber.handle_event(event)
 
-    def _start_watch_thread(self, origin: GrpcServerCodeLocationOrigin) -> None:
-        from dagster._grpc.server_watcher import create_grpc_watch_thread
-
-        location_name = origin.location_name
-        check.invariant(location_name not in self._watch_thread_shutdown_events)
-        client = origin.create_client()
-        shutdown_event, watch_thread = create_grpc_watch_thread(
-            location_name,
-            client,
-            on_updated=lambda location_name, new_server_id: self._send_state_event_to_subscribers(
-                LocationStateChangeEvent(
-                    LocationStateChangeEventType.LOCATION_UPDATED,
-                    location_name=location_name,
-                    message="Server has been updated.",
-                    server_id=new_server_id,
-                )
-            ),
-            on_error=lambda location_name: self._send_state_event_to_subscribers(
-                LocationStateChangeEvent(
-                    LocationStateChangeEventType.LOCATION_ERROR,
-                    location_name=location_name,
-                    message=(
-                        "Unable to reconnect to server. You can reload the server once it is "
-                        "reachable again"
-                    ),
-                )
-            ),
-        )
-        self._watch_thread_shutdown_events[location_name] = shutdown_event
-        self._watch_threads[location_name] = watch_thread
-        watch_thread.start()
-
     def _load_location(self, origin: CodeLocationOrigin, reload: bool) -> CodeLocationEntry:
         location_name = origin.location_name
         location = None
@@ -912,11 +880,6 @@ class WorkspaceProcessContext(IWorkspaceProcessContext):
 
             previous_locations = self._workspace_snapshot.code_location_entries
             self._workspace_snapshot = WorkspaceSnapshot(code_location_entries=new_locations)
-
-            # start monitoring for new locations
-            for entry in new_locations.values():
-                if isinstance(entry.origin, GrpcServerCodeLocationOrigin):
-                    self._start_watch_thread(entry.origin)
 
         # clean up previous locations
         for event in previous_events.values():
