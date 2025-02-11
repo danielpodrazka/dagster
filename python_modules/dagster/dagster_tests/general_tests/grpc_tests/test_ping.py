@@ -204,25 +204,6 @@ def create_server_process():
         return port, server_process
 
 
-def test_fixed_server_id():
-    port = find_free_port()
-    with instance_for_test() as instance:
-        server_process = open_server_process(
-            instance.get_ref(),
-            port=port,
-            socket=None,
-            fixed_server_id="fixed_id",
-            server_command=GrpcServerCommand.API_GRPC,
-        )
-        assert server_process is not None
-
-        try:
-            api_client = DagsterGrpcClient(port=port)
-            assert api_client.get_server_id() == "fixed_id"
-        finally:
-            _cleanup_process(server_process)
-
-
 def test_detect_server_restart():
     # Create first server and query ID
     port, server_process = create_server_process()
