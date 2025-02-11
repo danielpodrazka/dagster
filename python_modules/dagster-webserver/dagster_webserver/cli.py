@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import textwrap
+import threading
 from collections.abc import AsyncIterator
 from typing import Optional
 
@@ -22,6 +23,7 @@ from dagster._core.telemetry import START_DAGSTER_WEBSERVER, log_action
 from dagster._core.telemetry_upload import uploading_logging_thread
 from dagster._core.workspace.context import IWorkspaceProcessContext, WorkspaceProcessContext
 from dagster._serdes import deserialize_value
+from dagster._serdes.ipc import monitor_ipc_shutdown_pipe
 from dagster._utils import DEFAULT_WORKSPACE_YAML_FILENAME, find_free_port, is_port_in_use
 from dagster._utils.log import configure_loggers
 
@@ -179,6 +181,13 @@ DEFAULT_POOL_RECYCLE = 3600  # 1 hr
     default=2000,
     show_default=True,
 )
+@click.option(
+    "--shutdown-pipe",
+    type=click.INT,
+    required=False,
+    hidden=True,
+    help="Internal use only. Pass a readable pipe file descriptior to the webserver process that will be monitored for a shutdown signal.",
+)
 @click.version_option(version=__version__, prog_name="dagster-webserver")
 @workspace_options
 def dagster_webserver(
@@ -195,6 +204,7 @@ def dagster_webserver(
     code_server_log_level: str,
     instance_ref: Optional[str],
     live_data_poll_rate: int,
+    shutdown_pipe: Optional[int],
     **other_opts: object,
 ):
     workspace_opts = WorkspaceOpts.extract_from_cli_options(other_opts)
@@ -220,21 +230,30 @@ def dagster_webserver(
         # Allow the instance components to change behavior in the context of a long running server process
         instance.optimize_for_webserver(db_statement_timeout, db_pool_recycle)
 
-        with WorkspaceProcessContext(
-            instance,
-            version=__version__,
-            read_only=read_only,
-            workspace_load_target=workspace_opts.to_load_target(),
-            code_server_log_level=code_server_log_level,
-        ) as workspace_process_context:
-            host_dagster_ui_with_workspace_process_context(
-                workspace_process_context,
-                host,
-                port,
-                path_prefix,
-                uvicorn_log_level,
-                live_data_poll_rate,
-            )
+        stop_event = threading.Event()
+        try:
+            with (
+                monitor_ipc_shutdown_pipe(shutdown_pipe, stop_event)
+                if shutdown_pipe
+                else contextlib.nullcontext(),
+                WorkspaceProcessContext(
+                    instance,
+                    version=__version__,
+                    read_only=read_only,
+                    workspace_load_target=workspace_opts.to_load_target(),
+                    code_server_log_level=code_server_log_level,
+                ) as workspace_process_context,
+            ):
+                host_dagster_ui_with_workspace_process_context(
+                    workspace_process_context,
+                    host,
+                    port,
+                    path_prefix,
+                    uvicorn_log_level,
+                    live_data_poll_rate,
+                )
+        finally:
+            stop_event.set()
 
 
 @contextlib.asynccontextmanager

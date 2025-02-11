@@ -1,5 +1,7 @@
 import os
 import sys
+import threading
+from contextlib import nullcontext
 from typing import Optional
 
 import click
@@ -19,6 +21,7 @@ from dagster._daemon.controller import (
 )
 from dagster._daemon.daemon import get_telemetry_daemon_session_id
 from dagster._serdes import deserialize_value
+from dagster._serdes.ipc import monitor_ipc_shutdown_pipe
 from dagster._utils.interrupts import capture_interrupts
 
 
@@ -62,19 +65,33 @@ def _get_heartbeat_tolerance():
     required=False,
     hidden=True,
 )
+@click.option(
+    "--shutdown-pipe",
+    type=click.INT,
+    required=False,
+    hidden=True,
+    help="Internal use only. Pass a readable pipe file descriptor to the daemon process that will be monitored for a shutdown signal.",
+)
 @workspace_options
 def run_command(
     code_server_log_level: str,
     log_level: str,
     log_format: str,
     instance_ref: Optional[str],
+    shutdown_pipe: Optional[int],
     **other_opts: object,
 ) -> None:
     workspace_opts = WorkspaceOpts.extract_from_cli_options(other_opts)
     assert_no_remaining_opts(other_opts)
 
+    stop_event = threading.Event()
     try:
-        with capture_interrupts():
+        with (
+            monitor_ipc_shutdown_pipe(shutdown_pipe, stop_event)
+            if shutdown_pipe
+            else nullcontext(),
+            capture_interrupts(),
+        ):
             with get_instance_for_cli(
                 instance_ref=deserialize_value(instance_ref, InstanceRef) if instance_ref else None
             ) as instance:
@@ -83,6 +100,8 @@ def run_command(
                 )
     except KeyboardInterrupt:
         return  # Exit cleanly on interrupt
+    finally:
+        stop_event.set()
 
 
 @telemetry_wrapper(metadata={"DAEMON_SESSION_ID": get_telemetry_daemon_session_id()})

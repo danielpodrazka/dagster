@@ -232,9 +232,7 @@ def _launch_dev_command(
         # CI environment. Interrupt propagation is dependent on processes sharing a console (which
         # is the case in a user terminal session, but not in a CI environment). So on windows, we
         # force kill the processes after a timeout.
-        _wait_for_child_processes_to_exit(
-            child_processes, timeout=30, force_kill=platform.system() == "Windows"
-        )
+        _wait_for_child_processes_to_exit(child_processes, timeout=30)
 
 
 def _wait_for_webserver_running(dagit_port):
