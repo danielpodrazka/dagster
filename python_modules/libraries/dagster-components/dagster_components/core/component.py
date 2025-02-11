@@ -225,6 +225,7 @@ T = TypeVar("T")
 
 @dataclass
 class ComponentLoadContext:
+    components_root: Path
     resources: Mapping[str, object]
     registry: ComponentTypeRegistry
     decl_node: Optional[ComponentDeclNode]
@@ -238,6 +239,7 @@ class ComponentLoadContext:
         decl_node: Optional[ComponentDeclNode] = None,
     ) -> "ComponentLoadContext":
         return ComponentLoadContext(
+            components_root=Path("."),
             resources=resources or {},
             registry=registry or ComponentTypeRegistry.empty(),
             decl_node=decl_node,
